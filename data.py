@@ -47,8 +47,8 @@ class DataList:
 
         if file_name.endswith("sgm"):
             self.readsgm(file_name)
-        else:
-            print("File format nor valid.")
+        # else:
+        #    print("File format not valid.")
 
     def readsgm(self, file_name):
 
@@ -86,33 +86,44 @@ class DataList:
         two classes: positive and negative
         """
         
-        ntrain = len(self.train_data)
+        ntrain = self.train_data.shape[0]
         nlabels = len(self.labels)
 
-        positive_train = []
-        negative_train = []
+        positive_train = None
+        negative_train = None
 
-        positive_test = []
-        negative_test = []
+        positive_test = None
+        negative_test = None
 
 
         k = 0
         for i in range(nlabels):
 
-            if self.labels[i] == class_name:
+            if class_name in self.labels[i]:
                 if i < ntrain:
-                    positive_train.append(self.train_data[k])
+                    if positive_train == None:
+                        positive_train = self.train_data[k]
+                    else:
+                        positive_train = sparse.vstack([positive_train, self.train_data[k]])
                 else:
-                    if i == ntrain:
+                    if positive_test == None:
                         k = 0
-                    positive_test.append(self.test_data[k])
+                        positive_test = self.test_data[k]
+                    else: 
+                        positive_test =  sparse.vstack([positive_test, self.test_data[k]])
             else:
                 if i < ntrain:
-                    negative_train.append(self.train_data[k])
+                    if negative_train == None:
+                        negative_train = self.train_data[k]
+                    else:
+                        negative_train = sparse.vstack([negative_train, self.train_data[k]])
+                    # negative_train.append(self.train_data[k])
                 else:
-                    if i == ntrain:
+                    if negative_test == None:
                         k = 0
-                    positive_test.append(self.test_data[k])
+                        negative_test = self.test_data[k]
+                    else:
+                        negative_test =  sparse.vstack([negative_test, self.test_data[k]])
 
             k = k + 1
 
@@ -149,17 +160,27 @@ class DataList:
         test_data = [f.text for f in test_data]
 
         # vectorizer by tf idf model    
-        tfidf_train = TfidfVectorizer(tokenizer=tokenize, stop_words='english', min_df=3)
-        tfidf_teste = TfidfVectorizer(tokenizer=tokenize, stop_words='english', min_df=3)
+        # acho que eu tenho que colocar todas as palavras no mesmo modelo tfidf, certo?
+        tfidf = TfidfVectorizer(tokenizer=tokenize, stop_words='english', min_df=3)
 
-        self.train_data = tfidf_train.fit_transform(train_data)
-        self.test_data = tfidf_test.fit_transform(test_data)
+        self.train_data = tfidf.fit_transform(train_data)
+        # self.test_data = tfidf.fit_transform(test_data)
+        self.test_data = self.train_data
 
-        self.train_data = sparse.lil_matrix(sparse.csr_matrix(self.train_data)[:,range(self.nfeatures)])
-        self.test_data = sparse.lil_matrix(sparse.csr_matrix(self.test_data)[:,range(self.nfeatures)])
+        # print(self.nfeatures, self.train_data.shape, self.test_data.shape)
+        # 10000 (9603, 14056) (3299, 6733)
+        # self.train_data = sparse.lil_matrix(sparse.csr_matrix(self.train_data)[:,range(self.nfeatures)])
+        # self.test_data = sparse.lil_matrix(sparse.csr_matrix(self.test_data)[:,range(self.nfeatures)])
   
-    def write_data(self, out_file):
+    def write_data(self, out_file, X, y):
+    
+        sklearn.datasets.dump_svmlight_file(X, y, out_file)
 
-        sklearn.datasets.dump_svmlight(X, y, out_file_train)
+    def load_data(self, input_file):
 
-    def load_data(self, ):
+        test_file  = "features/test_%s" % input_file
+        train_file = "features/train_%s" % input_file
+
+        data_test = sklearn.datasets.load_svmlight_file(test_file)
+        data_train = sklearn.datasets.load_svmlight_file(train_file)
+        return data_train[0], data_train[1], data_test[0], data_test[1]
