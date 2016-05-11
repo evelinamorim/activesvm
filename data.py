@@ -6,11 +6,18 @@ import sklearn
 import numpy as np
 import scipy
 from scipy import sparse
+import re
+import random
 
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from nltk.stem.porter import PorterStemmer
+from nltk.corpus import stopwords
 
 stemmer = PorterStemmer()
+stop_list = stopwords.words('english')
+
+num = re.compile('\d+')
+random.seed(179426321)
 
 def stem_tokens(tokens, stemmer):
     stemmed = []
@@ -35,20 +42,39 @@ class Data:
 
 class DataList:
 
-    def __init__(self, nfeatures):
+    def __init__(self, nfeatures, split = 'LEWISSPLIT'):
         self.data_list = []
         self.labels = []
         self.nfeatures = nfeatures
 
         self.train_data = []
         self.test_data = []
+        self.split = split
+   
+
+    def set_split(self, split):
+        self.split = split
 
     def read(self, file_name):
 
+        path, f = os.path.split(file_name)
+
         if file_name.endswith("sgm"):
             self.readsgm(file_name)
+        elif num.match(f):
+            self.readtext(file_name)
         # else:
         #    print("File format not valid.")
+
+    def readtext(self, file_name):
+
+        d = Data()
+        d.text = open(file_name, "r").read()
+
+        lst_path = file_name.split(os.sep)
+
+        d.cat['topics'] = lst_path[len(lst_path)-2].split('.')[0]
+        self.data_list.append(d)
 
     def readsgm(self, file_name):
 
@@ -95,7 +121,6 @@ class DataList:
         positive_test = None
         negative_test = None
 
-
         k = 0
         for i in range(nlabels):
 
@@ -126,8 +151,23 @@ class DataList:
                         negative_test =  sparse.vstack([negative_test, self.test_data[k]])
 
             k = k + 1
-
+        # (389, 8958) (9214, 8958) (189, 8958) (3110, 8958)
+        # print('>>>> ', positive_train.shape, negative_train.shape, positive_test.shape, negative_test.shape)
         return positive_train, negative_train, positive_test, negative_test 
+
+    def shuffle_data(self):
+        random.shuffle(self.data_list)
+
+    def build_fold(self, idx_fold, nfold):
+
+        ninstances = len(self.data_list)
+        tam_fold = int(ninstances/nfold)
+
+        begin = idx_fold*tam_fold
+        end = idx_fold*tam_fold + tam_fold
+
+        self.train_data = self.data_list[0:begin] + self.data_list[end:ninstances]
+        self.test_data = self.data_list[begin:end]
 
     def get_train_test(self):
 
@@ -138,13 +178,19 @@ class DataList:
         train_data = []
         test_data = []
 
-        for d in self.data_list:
 
-            if d.topics == 'YES':
-                if d.lewis_split == 'TRAIN':
-                    train_data.append(d)
-                elif d.lewis_split == 'TEST':
-                    test_data.append(d)
+        if self.split == 'CROSSVALIDATION':
+            train_data = self.train_data    
+            test_data = self.test_data
+
+        elif self.split == 'LEWISSPLIT':
+            for d in self.data_list:
+
+                if d.topics == 'YES':
+                    if d.lewis_split == 'TRAIN':
+                        train_data.append(d)
+                    elif d.lewis_split == 'TEST':
+                        test_data.append(d)
 
         return train_data, test_data
 
@@ -161,20 +207,22 @@ class DataList:
 
         # vectorizer by tf idf model    
         # acho que eu tenho que colocar todas as palavras no mesmo modelo tfidf, certo?
-        tfidf = TfidfVectorizer(tokenizer=tokenize, stop_words='english', min_df=3)
+        tfidf = TfidfVectorizer(tokenizer=tokenize, stop_words='english', min_df=5)
+        countvec = CountVectorizer(tokenizer=tokenize, stop_words='english', min_df=5)
 
         self.train_data = tfidf.fit_transform(train_data)
-        # self.test_data = tfidf.fit_transform(test_data)
-        self.test_data = self.train_data
-
-        # print(self.nfeatures, self.train_data.shape, self.test_data.shape)
-        # 10000 (9603, 14056) (3299, 6733)
-        # self.train_data = sparse.lil_matrix(sparse.csr_matrix(self.train_data)[:,range(self.nfeatures)])
-        # self.test_data = sparse.lil_matrix(sparse.csr_matrix(self.test_data)[:,range(self.nfeatures)])
+        self.test_data = tfidf.transform(test_data)
   
     def write_data(self, out_file, X, y):
     
         sklearn.datasets.dump_svmlight_file(X, y, out_file)
+
+    def load_test_data(self, input_file):
+
+        test_file  = "features/test_%s" % input_file
+
+        data_test = sklearn.datasets.load_svmlight_file(test_file)
+        return data_test[0], data_test[1]
 
     def load_data(self, input_file):
 
