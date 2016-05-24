@@ -2,6 +2,7 @@
 import numpy as np
 import scipy
 from scipy import sparse
+import arff
 
 from sklearn.datasets import load_svmlight_file
 from sklearn import  metrics
@@ -54,6 +55,16 @@ def get_output_y(fname):
     fd.close()
     return y
 
+def libsvm2arff(input_file, out_file):
+
+    X, y = load_svmlight_file(input_file)
+    l,c = X.shape
+    data = np.zeros((l,c+1))
+    data[:,:-1] = X.toarray()
+    data[:,c] = y
+
+    arff.dump(out_file, data)
+
 def compute_auc(ftr_file, output_dir):
 
     data = load_svmlight_file(ftr_file)
@@ -95,5 +106,7 @@ def compute_auc(ftr_file, output_dir):
     plt.show()
 
 # compute_auc("features/test_crude.lsvm", "output_svm/")
-count_pos_neg(sys.argv[1])
-    
+# count_pos_neg(sys.argv[1])
+input_file = sys.argv[1]
+out_file = sys.argv[2]
+libsvm2arff(input_file, out_file)    
