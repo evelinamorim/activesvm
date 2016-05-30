@@ -9,28 +9,41 @@ from scipy import sparse
 import re
 import random
 import math
+import json
+import string
+import time
 
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
-from sklearn import cross_validation
-from nltk.stem.porter import PorterStemmer
+from sklearn import cross_validation, feature_extraction
 from nltk.corpus import stopwords
 
-stemmer = PorterStemmer()
+import utils
+from argument import ArgumentRelation
+
 stop_list = stopwords.words('english')
 
-num = re.compile('\d+')
+NUM_PATTERN = re.compile('\d+')
+REASON_ID_PATTERN = re.compile('\d+\_\d+')
+GRAMMAR = r"""
+  NP: {<DT|JJ|NN.*>+}          # Chunk sequences of DT, JJ, NN
+  PP: {<IN><NP>}               # Chunk prepositions followed by NP
+  VP: {<VB.*><NP|PP|CLAUSE>+$} # Chunk verbs and their arguments
+  CLAUSE: {<NP><VP>}           # Chunk NP, VP
+  """
 random.seed(179426321)
+translator = str.maketrans({key: None for key in string.punctuation})
 
-def stem_tokens(tokens, stemmer):
-    stemmed = []
-    for item in tokens:
-        stemmed.append(stemmer.stem(item))
-    return stemmed
+chunk_parser = nltk.RegexpParser(GRAMMAR, loop=2)
+
 
 def tokenize(text):
-    tokens = nltk.word_tokenize(text)
-    stems = stem_tokens(tokens, stemmer)
-    return stems
+   
+    new_text = text.translate(translator)
+    tokens = nltk.word_tokenize(new_text.lower())
+    tokens = [t for t in tokens if t not in stop_list]
+    # stems = stem_tokens(tokens, stemmer)
+    return tokens
+
 
 class Data:
 
@@ -38,17 +51,22 @@ class Data:
 
         self.cat = {}
         self.text = ""
+        self.text2 = "" # a secondary text in document to store
         self.lewis_split = None
         self.topics = None
         self.file_name = ""
+        self.id = {}
+        self.features = {}
 
+    def add_features(self, name, value):
+        self.features[name] = value
 
 class DataList:
 
-    def __init__(self, nfeatures, split = 'LEWISSPLIT', vec_type = 'tfidf'):
+    def __init__(self, split = 'LEWISSPLIT', vec_type = 'tfidf'):
         self.data_list = []
         self.labels = []
-        self.nfeatures = nfeatures
+        # self.nfeatures = nfeatures
 
         self.train_data = []
         self.test_data = []
@@ -57,6 +75,9 @@ class DataList:
         self.vec_type = vec_type   
 
         self._verbose = 0
+
+        self._vocabulary = {}
+        self._inv_vocabulary = {}
 
     def set_verbose_level(self, num):
         self._verbose = num
@@ -73,6 +94,155 @@ class DataList:
             return len(i)
         else:
             return i.shape[0]
+
+    def make_cross_product(self, tok1, tok2):
+        bigram_list = []
+        # nvoc = len(self._vocabulary.keys())
+
+        for w1 in tok1:
+            for w2 in tok2:
+                bigram_list.append((w1, w2))
+
+        return bigram_list
+
+    def make_word_pairs(self, relations, data_rel):
+
+        k = 0 
+        for r in relations:
+            tok_prop1, tok_prop2 = r.take_propositions_tok()
+            d = Data()
+            word_pairs = self.make_cross_product(tok_prop1, tok_prop2)
+            d.add_features('word_pairs', word_pairs)
+            data_rel.append(d)
+            k = k + 1
+
+    def first_last_first3(argrel, relations, data_rel):
+
+        k = 0
+        for r in relations:
+            tok_prop1, tok_prop2 = r.take_propositions_tok()
+            first_prop1 = tok_prop1[0]
+            first_3_prop1 = tok_prop1[:3]
+            last_prop1 = tok_prop1[-1]
+
+            first_prop2 = tok_prop2[0]
+            first_3_prop2 = tok_prop2[:3]
+            last_prop2 = tok_prop2[-1]
+
+            data_rel[k].add_features('first_prop1', first_prop1)
+            data_rel[k].add_features('first_3_prop1', first_3_prop1)
+            data_rel[k].add_features('last_prop1', last_prop1)
+
+            data_rel[k].add_features('first_prop2', first_prop2)
+            data_rel[k].add_features('first_3_prop2', first_3_prop2)
+            data_rel[k].add_features('last_prop2', last_prop2)
+            k = k + 1
+       
+
+    def verb_features(argrel, relations, data_rel):
+
+        k = 0
+        # import pdb
+        # pdb.set_trace()
+        for r in relations:
+
+            tok_prop1, tok_prop2 = r.take_propositions_tok()
+
+            pos_tag_prop1 = nltk.pos_tag(tok_prop1)
+            pos_tag_prop2 = nltk.pos_tag(tok_prop2)
+
+            verbs_prop1 = utils.get_verbs(pos_tag_prop1)
+            verbs_prop2 = utils.get_verbs(pos_tag_prop2)
+ 
+            # first verb feature: counting of verbs that are in the same Levin 
+            # English class
+            count_levin = utils.count_levin_pairs(verbs_prop1, verbs_prop2)
+            data_rel[k].add_features('count_levin', count_levin)
+
+            chunk_prop1 = chunk_parser.parse(pos_tag_prop1)
+            chunk_prop2 = chunk_parser.parse(pos_tag_prop2)
+
+            vp_prop1 = utils.get_verb_phrases(chunk_prop1)
+            vp_prop2 = utils.get_verb_phrases(chunk_prop2)
+
+            # second verb feature: the average length of verb phrases
+            avg_vp_len = 0
+            nvp = len(vp_prop1)
+            tok_vp1 = []
+            for vp1 in vp_prop1:
+                avg_vp_len = avg_vp_len + len(vp1)
+                tok_vp1.extend(vp1.leaves())
+
+            nvp = nvp + len(vp_prop2)
+            tok_vp2 = []
+            for vp2 in vp_prop2:
+                avg_vp_len = avg_vp_len + len(vp2)
+                tok_vp2.extend(vp2.leaves())
+
+            data_rel[k].add_features('avg_vp_len', avg_vp_len / nvp)
+
+            # third verb feature: cross product of verb phrases
+            vp_cross_product = self.make_cross_product(tok_vp1, tok_vp2)
+
+            data_rel[k].add_features('vp_cross_product', vp_cros_product)
+
+            # fourth verb feature: pos tag of main verb for each argument
+            k = k + 1
+
+        
+
+    def make_relations(self, i, propositions):
+
+        tok_i, reason_i = propositions[i]
+        relations = []
+
+        if reason_i is not None:
+            for r in reason_i:
+
+                rel = ArgumentRelation()
+                rel.add_head(i, tok_i)
+                rel.set_connection()
+
+                if REASON_ID_PATTERN.match(r):
+                    reasons = r.split("_")
+                    for c in reasons:
+                        tok_c, reason_c = propositions[int(c)]
+                        rel.add_proposition(int(c), tok_c)
+
+                    rel.colapse_propositions()
+
+                elif NUM_PATTERN.match(r):
+                    tok_r, reason_r = propositions[int(r)]
+                    rel.add_proposition(int(r), tok_r)
+
+                relations.append(rel)
+        else:
+            for p in propositions:
+                tok_p, reason_p = propositions[int(p)]
+                if p != i:
+                   rel = ArgumentRelation()
+                   rel.add_proposition(i, tok_i)
+                   rel.add_proposition(int(p), tok_p)
+                   rel.unset_connection()
+
+                   relations.append(rel)
+
+        return relations
+
+    def extract_features(self, propositions):
+
+        output_data = []
+        # for each proposition p in a propositions set, build relations for p 
+        # considering propositions of the given propositions set
+        for p in propositions:
+            relations = self.make_relations(p, propositions)
+            data_rel = []
+            self.make_word_pairs(relations, data_rel)
+            self.first_last_first3(relations, data_rel)
+            self.verb_features(relations, data_rel)
+            output_data.extend(data_rel)
+
+        return output_data
 
     def remove_ninstances(self, class_name, r):
         """
@@ -92,43 +262,98 @@ class DataList:
         k = math.ceil((1-r)*len(class_data))
         self.data_list = not_class_data + random.sample(class_data, k)
 
-    def build_kfold(self, cv, idxfold):
+    def build_kfold_dict(self, cv, idxfold):
 
-        ninstances = len(self.data_list)
+        ninstances = len(self.data_list.keys())
         len_fold = math.ceil(ninstances / cv)
         begin_test = idxfold*len_fold
         end_test = min(begin_test + len_fold, ninstances)
         idx = 0
-        while idx < ninstances:
+
+        test_data = {}
+        train_data = {}
+
+        # separando o treino o teste e enquanto isso tokeniza cada proposicao
+        # em cada argumento
+        for k in self.data_list:
             if idx >= begin_test and idx < end_test:
-                self.test_data.append(self.data_list[idx])
+                test_data[k] = self.process_argument(self.data_list[k])
             else:
-                self.train_data.append(self.data_list[idx])
+                train_data[k] = self.process_argument(self.data_list[k])
 
             idx = idx + 1 
      
-        self.labels = [f.cat['topics'] for f in self.train_data] +\
-                      [f.cat['topics'] for f in self.test_data]
+        print(len(test_data), len(train_data))
 
-        ####
-        # y = []
-        # for l in self.labels:
-        #  if l == 'sci':
-        #      y.append(1)
-        #  else:
-        #      y.append(-1)
+        # agora aqui eh feita uma lista de bigramas para cada argumento...
+        #...primeiro no conjunto de treino...
+        self.train_data = []
+        for k in train_data:
+             self.train_data.extend(self.extract_features(train_data[k]))
 
-        ####
-        # self.train_data_tmp = self.train_data
-        # self.test_data_tmp = self.test_data
 
-        self.train_data = [f.text for f in self.train_data]
-        self.test_data = [f.text for f in self.test_data]
+        #...depois no conjunto de teste...
+        self.test_data = []
+        for k in test_data:
+             self.test_data.extend(self.extract_features(test_data[k]))
 
-        ######begin########
-        # data = self.train_data + self.test_data
-        # self.train_data, self.test_data, self.y_train, self.y_test = cross_validation.train_test_split(data, y, test_size = 0.1)
-        ######end########
+
+    def build_kfold(self, cv, idxfold):
+
+        if type(self.data_list) == dict:
+            self.build_kfold_dict(cv, idxfold)
+        else:
+            ninstances = len(self.data_list)
+            len_fold = math.ceil(ninstances / cv)
+            begin_test = idxfold*len_fold
+            end_test = min(begin_test + len_fold, ninstances)
+            idx = 0
+            while idx < ninstances:
+                if idx >= begin_test and idx < end_test:
+                    self.test_data.append(self.data_list[idx])
+                else:
+                    self.train_data.append(self.data_list[idx])
+
+                idx = idx + 1 
+     
+                self.labels = [f.cat['topics'] for f in self.train_data] +\
+                              [f.cat['topics'] for f in self.test_data]
+
+            ####
+            # y = []
+            # for l in self.labels:
+            #  if l == 'sci':
+            #      y.append(1)
+            #  else:
+            #      y.append(-1)
+
+            ####
+            # self.train_data_tmp = self.train_data
+            # self.test_data_tmp = self.test_data
+
+            self.train_data = [f.text for f in self.train_data]
+            self.test_data = [f.text for f in self.test_data]
+
+            ######begin########
+            # data = self.train_data + self.test_data
+            # self.train_data, self.test_data, self.y_train, self.y_test = cross_validation.train_test_split(data, y, test_size = 0.1)
+            ######end########
+
+    def process_argument(self, arg):
+        """
+        Given a argument as a dictionary type, it appends the pairs of reasons  
+        to the list of data_list. Each pair is a Data object.
+        """
+        
+        # iterating through propositions
+        arg_dict = {}
+        for p in arg:
+            id_p = p["id"]
+            text_p = p["text"]
+            reason_p = p["reasons"]
+            arg_dict[id_p] = (tokenize(text_p), reason_p)
+
+        return arg_dict    
 
     def read(self, file_name):
 
@@ -136,10 +361,22 @@ class DataList:
 
         if file_name.endswith("sgm"):
             self.readsgm(file_name)
-        elif num.match(f):
+        elif file_name.endswith("jsonlist"):
+            self.readjson(file_name)
+        elif NUM_PATTERN.match(f):
             self.readtext(file_name)
         # else:
         #    print("File format not valid.")
+
+    def readjson(self, file_name):
+
+        # TODO: separar treino e teste -> supor validacao cruzada
+        json_fd = open(file_name, "rb")
+        self.data_list = {}
+        for line in json_fd:
+            d = json.loads(line.decode('UTF-8'))
+            self.data_list[d["commentID"]] = d["propositions"]
+        json_fd.close()
 
     def readtext(self, file_name):
 
@@ -355,30 +592,71 @@ class DataList:
  
         return vec_train, vec_test
 
+    def vectorize_dict(self):
+
+        nvoc = len(self._vocabulary.keys())
+        train_vec = []
+
+        for d in self.train_data:
+            bigram_list = []
+            for (w1,w2) in d:
+                if  (w1,w2) not in self._vocabulary:
+                    if (w2, w1) not in self._vocabulary:
+                        self._vocabulary[(w1,w2)] = nvoc    
+                        nvoc = nvoc + 1
+                    else:
+                        bigram_list.append(self._vocabulary[(w2, w1)])
+                else:
+                    bigram_list.append(self._vocabulary[(w1, w2)])
+
+            train_vec.append(bigram_list)
+
+        dim_data = len(self._vocabulary)
+        self.train_data = utils.create_matrix_csr(train_vec, dim_data)
+
+        # sera que posso customizar o CountVectorizer para fazer o produto das frases?
+        test_vec = []
+        for d in self.test_data:
+            bigram_list = []
+            for (w1,w2) in d:
+                if  (w1,w2) in self._vocabulary:
+                    bigram_list.append(self._vocabulary[(w1, w2)])
+                else:
+                    if (w2, w1) in self._vocabulary:
+                        bigram_list.append(self._vocabulary[(w2, w1)])
+
+            test_vec.append(bigram_list)
+
+        self.test_data = utils.create_matrix_csr(test_vec, dim_data)
+        #print(len(self.test_data), len(self._vocabulary))
+
     def vectorize(self):
 
-        train_data, test_data = self.get_train_test()
-        self.labels = [f.cat['topics'] for f in train_data] +\
-                      [f.cat['topics'] for f in test_data]
+        if type(self.data_list) == dict:
+            self.vectorize_dict()
+        else:
+            train_data, test_data = self.get_train_test()
+            self.labels = [f.cat['topics'] for f in train_data] +\
+                          [f.cat['topics'] for f in test_data]
 
-        train_data = [f.text for f in train_data]
-        test_data = [f.text for f in test_data]
+            train_data = [f.text for f in train_data]
+            test_data = [f.text for f in test_data]
 
-        # vectorizer by tf idf model    
-        # acho que eu tenho que colocar todas as palavras no mesmo modelo tfidf, certo?
-        vec_model = None
-        if self.vec_type == 'tfidf':
-            # vec_model = tfidfvectorizer(tokenizer=tokenize, stop_words='english', min_df=5, max_features=1000)
-            # vec_model = TfidfVectorizer(sublinear_tf=True, stop_words='english', max_df=0.5)
-            vec_model = TfidfVectorizer(sublinear_tf=True, stop_words='english', max_df=0.5)
-        elif self.vec_type == 'count':
-            vec_model = CountVectorizer(tokenizer=tokenize, stop_words='english', min_df=5)
-        elif self.vec_type == 'bin':
-            vec_model = CountVectorizer(tokenizer=tokenize, stop_words='english', min_df=5, binary=True)
+            # vectorizer by tf idf model    
+            # acho que eu tenho que colocar todas as palavras no mesmo modelo tfidf, certo?
+            vec_model = None
+            if self.vec_type == 'tfidf':
+                # vec_model = tfidfvectorizer(tokenizer=tokenize, stop_words='english', min_df=5, max_features=1000)
+                # vec_model = TfidfVectorizer(sublinear_tf=True, stop_words='english', max_df=0.5)
+                vec_model = TfidfVectorizer(sublinear_tf=True, stop_words='english', max_df=0.5)
+            elif self.vec_type == 'count':
+                vec_model = CountVectorizer(tokenizer=tokenize, stop_words='english', min_df=5)
+            elif self.vec_type == 'bin':
+                vec_model = CountVectorizer(tokenizer=tokenize, stop_words='english', min_df=5, binary=True)
 
-        self.train_data = vec_model.fit_transform(train_data)
-        self.test_data = vec_model.transform(test_data)
-        # print(">>>", self.train_data.shape, self.test_data.shape)
+            self.train_data = vec_model.fit_transform(train_data)
+            self.test_data = vec_model.transform(test_data)
+            # print(">>>", self.train_data.shape, self.test_data.shape)
   
     def write_data(self, out_file, X, y):
     
@@ -399,3 +677,13 @@ class DataList:
         data_test = sklearn.datasets.load_svmlight_file(test_file)
         data_train = sklearn.datasets.load_svmlight_file(train_file)
         return data_train[0], data_train[1], data_test[0], data_test[1]
+
+if __name__ == "__main__":
+    d = DataList()
+    d.read('/Users/evelin.amorim/Documents/Cornell/ArgRel/apr1.jsonlist')
+    d.build_kfold(10, 0)
+    # d.vectorize() # TODO: fix according to the new featuredata structure
+
+    # ninstances = d.train_data.shape[0]
+    # y = d.labels[:ninstances]   
+    # d.write_data('argrel_sample.libsvm')
