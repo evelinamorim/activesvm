@@ -6,7 +6,6 @@ import array
 from nltk.corpus import verbnet as vn
 from nltk.stem.porter import PorterStemmer
 
-VERB_TAGS = ['VB', 'VBD', 'VBG', 'VBN', 'VBP', 'VBZ'] 
 stemmer = PorterStemmer()
 
 def stem_tokens(tokens, stemmer):
@@ -49,15 +48,6 @@ def create_matrix_csr(m, dim):
     X.sum_duplicates()    
     return X
 
-def get_verbs(pos_tag):
-
-    verb_list = []
-
-    for (tok, tag) in pos_tag:
-        if tag in VERB_TAGS:
-            verb_list.append((tok, tag))
-
-    return verb_list
 
 def first_level_class(classes_list):
     """
@@ -69,51 +59,7 @@ def first_level_class(classes_list):
 
     return set(first_classes)
 
-def count_levin_pairs(verbs1, verbs2):
 
-    count = 0
-
-    verbs1_classes = []
-    for v1 in verbs1:
-        tok1, pos_tag1 = v1
-        verbs1_classes.append(first_level_class(vn.classids(stemmer.stem(tok1))))
-
-    verbs2_classes = []
-    for v2 in verbs2:
-        tok2, pos_tag2 = v2
-        verbs2_classes.append(first_level_class(vn.classids(stemmer.stem(tok2))))
-
-    for s1 in verbs1_classes:
-        for s2 in verbs2_classes:
-            if len((s1 & s2)) != 0:
-                count = count + 1
-
-    return count
-
-def get_verb_phrases(t):
-    """
-    Given a chunk tree, it gets verb phrases 
-    """
-
-    queue = [t]
-    vp_list = []
-
-    while queue != []:
-        n = queue.pop()
-
-        try:
-            label = n.label()
-        except AttributeError:
-            # print(t, end=" ")
-            label = None
-        else:
-            if label == 'VP':
-                vp_list.append(n.leaves())
-            # Now we know that t.node is defined
-            for child in n:
-                queue.append(child)
-
-    return vp_list
 # print(binary_search([2,4,7,8,10], 1))
 # print(binary_search([2,4,7,8,10], 8))
 

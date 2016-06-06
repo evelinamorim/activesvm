@@ -18,29 +18,18 @@ from sklearn import cross_validation, feature_extraction
 from nltk.corpus import stopwords
 
 import utils
-from argument import ArgumentRelation
+from argument import ArgumentRelation, Argument
 
-stop_list = stopwords.words('english')
 
 NUM_PATTERN = re.compile('\d+')
 REASON_ID_PATTERN = re.compile('\d+\_\d+')
-GRAMMAR = r"""
-  NP: {<DT|JJ|NN.*>+}          # Chunk sequences of DT, JJ, NN
-  PP: {<IN><NP>}               # Chunk prepositions followed by NP
-  VP: {<VB.*><NP|PP|CLAUSE>+$} # Chunk verbs and their arguments
-  CLAUSE: {<NP><VP>}           # Chunk NP, VP
-  """
 random.seed(179426321)
-translator = str.maketrans({key: None for key in string.punctuation})
-
-chunk_parser = nltk.RegexpParser(GRAMMAR, loop=2)
 
 
 def tokenize(text):
    
-    new_text = text.translate(translator)
-    tokens = nltk.word_tokenize(new_text.lower())
-    tokens = [t for t in tokens if t not in stop_list]
+    tokens = nltk.word_tokenize(text.lower())
+    # tokens = [t for t in tokens if t not in stop_list]
     # stems = stem_tokens(tokens, stemmer)
     return tokens
 
@@ -109,7 +98,7 @@ class DataList:
 
         k = 0 
         for r in relations:
-            tok_prop1, tok_prop2 = r.take_propositions_tok()
+            tok_prop1, tok_prop2 = r.get_arguments_tokens()
             d = Data()
             word_pairs = self.make_cross_product(tok_prop1, tok_prop2)
             d.add_features('word_pairs', word_pairs)
@@ -120,7 +109,7 @@ class DataList:
 
         k = 0
         for r in relations:
-            tok_prop1, tok_prop2 = r.take_propositions_tok()
+            tok_prop1, tok_prop2 = r.get_arguments_tokens()
             first_prop1 = tok_prop1[0]
             first_3_prop1 = tok_prop1[:3]
             last_prop1 = tok_prop1[-1]
@@ -146,24 +135,17 @@ class DataList:
         # pdb.set_trace()
         for r in relations:
 
-            tok_prop1, tok_prop2 = r.take_propositions_tok()
-
-            pos_tag_prop1 = nltk.pos_tag(tok_prop1)
-            pos_tag_prop2 = nltk.pos_tag(tok_prop2)
-
-            verbs_prop1 = utils.get_verbs(pos_tag_prop1)
-            verbs_prop2 = utils.get_verbs(pos_tag_prop2)
  
             # first verb feature: counting of verbs that are in the same Levin 
             # English class
-            count_levin = utils.count_levin_pairs(verbs_prop1, verbs_prop2)
-            data_rel[k].add_features('count_levin', count_levin)
+            levin_pairs = r.get_levin_pairs(verbs_prop1, verbs_prop2)
+            data_rel[k].add_features('count_levin', len(levin_pairs))
 
-            chunk_prop1 = chunk_parser.parse(pos_tag_prop1)
-            chunk_prop2 = chunk_parser.parse(pos_tag_prop2)
+            r.arguments[1].build_chunk()
+            r.arguments[2].build_chunk()
 
-            vp_prop1 = utils.get_verb_phrases(chunk_prop1)
-            vp_prop2 = utils.get_verb_phrases(chunk_prop2)
+            vp_prop1 = r.arguments[1].get_verb_phrases()
+            vp_prop2 = r.arguments[2].get_verb_phrases()
 
             # second verb feature: the average length of verb phrases
             avg_vp_len = 0
@@ -187,42 +169,51 @@ class DataList:
             data_rel[k].add_features('vp_cross_product', vp_cros_product)
 
             # fourth verb feature: pos tag of main verb for each argument
+            r.arguments[1].build_deptree()
+            main_verb_arg1 = r.arguments[1].get_main_verb()
+
+            r.arguments[2].build_deptree() 
+            main_verb_arg2 = r.arguments[2].get_main_verb()
             k = k + 1
 
-        
 
-    def make_relations(self, i, propositions):
+    def make_relations(self, i, arguments):
 
-        tok_i, reason_i = propositions[i]
+        reason_i = arguments[i].reason
+        tok_i = arguments[i].reason
         relations = []
 
         if reason_i is not None:
             for r in reason_i:
 
                 rel = ArgumentRelation()
-                rel.add_head(i, tok_i)
+                rel.add_argument(arguments[i])
                 rel.set_connection()
 
                 if REASON_ID_PATTERN.match(r):
                     reasons = r.split("_")
-                    for c in reasons:
-                        tok_c, reason_c = propositions[int(c)]
-                        rel.add_proposition(int(c), tok_c)
+                    new_argument = Argument()
+                    new_argument.tokens = []
+                    new_argument.text = ""
+                    new_argument.posTagging = []
 
-                    rel.colapse_propositions()
+                    for c in reasons:
+                        new_argument.text = " " + propositions[int(c)].tokens
+                        new_argument.tokens.extend(propositions[int(c)].tokens)
+                        new_argument.posTagging.extend(propositions[int(c)].posTagging)
+
+                    rel.add_argument(new_argument)
 
                 elif NUM_PATTERN.match(r):
-                    tok_r, reason_r = propositions[int(r)]
-                    rel.add_proposition(int(r), tok_r)
+                    rel.add_argument(propositions[int(r)])
 
                 relations.append(rel)
         else:
             for p in propositions:
-                tok_p, reason_p = propositions[int(p)]
                 if p != i:
                    rel = ArgumentRelation()
-                   rel.add_proposition(i, tok_i)
-                   rel.add_proposition(int(p), tok_p)
+                   rel.add_argument(propositions[i])
+                   rel.add_argument(propostions[int(p)])
                    rel.unset_connection()
 
                    relations.append(rel)
@@ -351,7 +342,9 @@ class DataList:
             id_p = p["id"]
             text_p = p["text"]
             reason_p = p["reasons"]
-            arg_dict[id_p] = (tokenize(text_p), reason_p)
+
+            arg_dict[id_p] = Argument(text_p, reason_p)
+            arg_dict.process()
 
         return arg_dict    
 
